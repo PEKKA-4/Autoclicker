@@ -17,7 +17,7 @@ STEPPER_KEY = Key.f4
 
 class App:
     def __init__(self) -> None:
-        self.clicker = AutoClicker(clicks_per_second=10)
+        self.clicker = AutoClicker(clicks_per_second=100)
         self.mover = CircleMover()
         self.flicker = FlickMover(interval_seconds=60)
         self.flicker.attach_clicker(self.clicker)
@@ -43,7 +43,7 @@ class App:
         clicker_frame.pack(fill="x", **padding)
 
         ttk.Label(clicker_frame, text="Clicks per second:").grid(row=0, column=0, sticky="w")
-        self.cps_var = tk.StringVar(value="10")
+        self.cps_var = tk.StringVar(value="100")
         ttk.Entry(clicker_frame, textvariable=self.cps_var, width=8).grid(row=0, column=1, padx=5)
         ttk.Button(clicker_frame, text="Apply", command=self._apply_cps).grid(row=0, column=2)
 

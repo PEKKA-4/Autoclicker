@@ -5,13 +5,14 @@ from tkinter import ttk
 
 from pynput.keyboard import Key
 
-from automation import AutoClicker, CircleMover, FlickMover
+from automation import AntiAFKStepper, AutoClicker, CircleMover, FlickMover
 from hotkeys import start_hotkey_listener
 
 CLICKER_KEY = Key.f6
 CIRCLE_KEY = Key.f7
 FLICK_KEY = Key.f8
 CAPTURE_KEY = Key.f5
+STEPPER_KEY = Key.f4
 
 
 class App:
@@ -20,11 +21,12 @@ class App:
         self.mover = CircleMover()
         self.flicker = FlickMover(interval_seconds=60)
         self.flicker.attach_clicker(self.clicker)
+        self.stepper = AntiAFKStepper(back_key="s", forward_key="w", interval_seconds=45, jitter_seconds=15)
         self._exit_requested = False
 
         self.root = tk.Tk()
         self.root.title("Auto Clicker Control Panel")
-        self.root.geometry("320x310")
+        self.root.geometry("320x470")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -78,6 +80,40 @@ class App:
             foreground="gray",
         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
+        step_frame = ttk.LabelFrame(self.root, text=f"Anti-AFK Movement ({self._key_name(STEPPER_KEY)})")
+        step_frame.pack(fill="x", **padding)
+
+        ttk.Label(step_frame, text="Back key:").grid(row=0, column=0, sticky="w")
+        self.back_key_var = tk.StringVar(value="s")
+        ttk.Entry(step_frame, textvariable=self.back_key_var, width=4).grid(row=0, column=1, sticky="w", padx=5)
+
+        ttk.Label(step_frame, text="Forward key:").grid(row=0, column=2, sticky="w")
+        self.forward_key_var = tk.StringVar(value="w")
+        ttk.Entry(step_frame, textvariable=self.forward_key_var, width=4).grid(row=0, column=3, sticky="w", padx=5)
+
+        ttk.Label(step_frame, text="Every (s):").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.step_interval_var = tk.StringVar(value="45")
+        ttk.Entry(step_frame, textvariable=self.step_interval_var, width=6).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+        ttk.Label(step_frame, text="+/- jitter (s):").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        self.step_jitter_var = tk.StringVar(value="15")
+        ttk.Entry(step_frame, textvariable=self.step_jitter_var, width=6).grid(row=1, column=3, sticky="w", pady=(4, 0))
+
+        ttk.Button(step_frame, text="Apply", command=self._apply_step_settings).grid(row=2, column=3, sticky="e", pady=(4, 0))
+
+        self.step_status = ttk.Label(step_frame, text="OFF", foreground="red")
+        self.step_status.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        self.step_last_label = ttk.Label(step_frame, text="Last step: not fired yet", foreground="gray")
+        self.step_last_label.grid(row=3, column=0, columnspan=4, sticky="w")
+
+        ttk.Label(
+            step_frame,
+            text="Taps back key then forward key on an interval, e.g. S/W or A/D, to dodge AFK kicks without actually moving you.",
+            wraplength=270,
+            foreground="gray",
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 0))
+
         ttk.Label(
             self.root,
             text="Hotkeys work globally, even outside this window. Esc quits.",
@@ -107,18 +143,36 @@ class App:
             return
         self.flicker.set_interval(seconds)
 
+    def _apply_step_settings(self) -> None:
+        try:
+            self.stepper.set_keys(self.back_key_var.get(), self.forward_key_var.get())
+        except ValueError:
+            self.back_key_var.set("s")
+            self.forward_key_var.set("w")
+            return
+        try:
+            interval = float(self.step_interval_var.get())
+            jitter = float(self.step_jitter_var.get())
+        except ValueError:
+            self.step_interval_var.set("45")
+            self.step_jitter_var.set("15")
+            return
+        self.stepper.set_interval(interval, jitter)
+
     # ---- backend wiring ----
 
     def _start_backends(self) -> None:
         self.clicker.start()
         self.mover.start()
         self.flicker.start()
+        self.stepper.start()
         self.listener = start_hotkey_listener(
             bindings={
                 CLICKER_KEY: self.clicker.toggle,
                 CIRCLE_KEY: self.mover.toggle,
                 FLICK_KEY: self.flicker.toggle,
                 CAPTURE_KEY: self.flicker.capture_current_position,
+                STEPPER_KEY: self.stepper.toggle,
             },
             on_exit=self._request_exit,
         )
@@ -136,6 +190,8 @@ class App:
         self._set_status(self.circle_status, self.mover.active)
         self._set_status(self.flick_status, self.flicker.active)
         self._set_flick_point_label()
+        self._set_status(self.step_status, self.stepper.active)
+        self.step_last_label.config(text=f"Last step: {self.stepper.last_step_info}")
         self.root.after(150, self._poll_status)
 
     def _set_flick_point_label(self) -> None:
@@ -156,6 +212,7 @@ class App:
         self.clicker.stop()
         self.mover.stop()
         self.flicker.stop()
+        self.stepper.stop()
         self.listener.stop()
         self.root.destroy()
 

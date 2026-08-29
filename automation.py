@@ -5,9 +5,11 @@ The thread only does work while `active` is True; otherwise it idles cheaply.
 """
 
 import math
+import random
 import threading
 import time
 
+from pynput.keyboard import Controller as KeyboardController
 from pynput.mouse import Button, Controller as MouseController
 
 
@@ -203,3 +205,86 @@ class FlickMover(Toggleable):
 
         if self._clicker_to_pause is not None:
             self._clicker_to_pause.resume()
+
+
+class AntiAFKStepper(Toggleable):
+    """Anti-AFK-kick nudge: taps one key briefly, then the opposite key,
+    right after each other (e.g. S then W). Net position stays ~unchanged,
+    but the server still sees movement, which is enough to reset most
+    AFK-kick timers without actually walking you anywhere.
+
+    Keys are configurable (default W/S) so this also works as A/D, or any
+    other opposing pair. Interval has random jitter so the timing doesn't
+    look like a fixed, obviously-automated pattern.
+    """
+
+    def __init__(
+        self,
+        back_key: str = "s",
+        forward_key: str = "w",
+        interval_seconds: float = 45.0,
+        jitter_seconds: float = 15.0,
+        tap_duration: float = 0.05,
+    ) -> None:
+        super().__init__()
+        self._keyboard = KeyboardController()
+        self._elapsed = 0.0
+        self._last_step_info = "not fired yet"
+        self._tap_duration = max(tap_duration, 0.01)
+        self.set_keys(back_key, forward_key)
+        self.set_interval(interval_seconds, jitter_seconds)
+
+    def set_keys(self, back_key: str, forward_key: str) -> None:
+        back_key = (back_key or "").strip().lower()
+        forward_key = (forward_key or "").strip().lower()
+        if not back_key or not forward_key:
+            raise ValueError("Both keys must be non-empty single characters")
+        self._back_key = back_key[0]
+        self._forward_key = forward_key[0]
+
+    def set_interval(self, interval_seconds: float, jitter_seconds: float = 0.0) -> None:
+        self._interval = max(interval_seconds, 1.0)
+        # Jitter can't exceed the interval itself, or we could roll <= 0.
+        self._jitter = max(min(jitter_seconds, self._interval - 1.0), 0.0)
+        self._next_interval = self._roll_interval()
+
+    @property
+    def keys(self) -> tuple[str, str]:
+        return self._back_key, self._forward_key
+
+    @property
+    def last_step_info(self) -> str:
+        return self._last_step_info
+
+    def _roll_interval(self) -> float:
+        return self._interval + random.uniform(-self._jitter, self._jitter)
+
+    def _on_toggle(self) -> None:
+        self._elapsed = 0.0  # restart the countdown whenever (de)activated
+        self._next_interval = self._roll_interval()
+
+    def _tick(self) -> None:
+        time.sleep(self._step)
+        self._elapsed += self._step
+        if self._elapsed >= self._next_interval:
+            self._step_back_and_forward()
+            self._elapsed = 0.0
+            self._next_interval = self._roll_interval()
+
+    def _tap(self, key: str) -> None:
+        self._keyboard.press(key)
+        time.sleep(self._tap_duration)
+        self._keyboard.release(key)
+
+    def _step_back_and_forward(self) -> None:
+        timestamp = time.strftime("%H:%M:%S")
+        self._tap(self._back_key)
+        time.sleep(self._tap_duration)
+        self._tap(self._forward_key)
+        self._last_step_info = (
+            f"{timestamp}: {self._back_key.upper()} -> {self._forward_key.upper()}"
+        )
+        print(
+            f"Anti-AFK step: {self._back_key.upper()} then "
+            f"{self._forward_key.upper()} ({timestamp})"
+        )

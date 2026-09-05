@@ -1,11 +1,11 @@
 """Tkinter control panel for the auto clicker / anti-AFK tool."""
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 
 from pynput.keyboard import Key
 
-from automation import AntiAFKStepper, AutoClicker, CircleMover, FlickMover
+from automation import AntiAFKStepper, AutoClicker, CircleMover, FlickMover, SequencePlayer, SequenceRecorder
 from hotkeys import start_hotkey_listener
 
 CLICKER_KEY = Key.f6
@@ -13,6 +13,8 @@ CIRCLE_KEY = Key.f7
 FLICK_KEY = Key.f8
 CAPTURE_KEY = Key.f5
 STEPPER_KEY = Key.f4
+RECORD_KEY = Key.f10
+PLAYBACK_KEY = Key.f11
 
 
 class App:
@@ -22,11 +24,13 @@ class App:
         self.flicker = FlickMover(interval_seconds=60)
         self.flicker.attach_clicker(self.clicker)
         self.stepper = AntiAFKStepper(back_key="s", forward_key="w", interval_seconds=45, jitter_seconds=15)
+        self.recorder = SequenceRecorder(ignored_keys={RECORD_KEY, PLAYBACK_KEY})
+        self.player = SequencePlayer(get_events=lambda: self.recorder.events, loop=True)
         self._exit_requested = False
 
         self.root = tk.Tk()
         self.root.title("Auto Clicker Control Panel")
-        self.root.geometry("320x470")
+        self.root.geometry("330x650")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -114,6 +118,40 @@ class App:
             foreground="gray",
         ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
+        # --- Sequence Recorder / Player ---
+
+        seq_frame = ttk.LabelFrame(
+            self.root, text=f"Sequence ({self._key_name(RECORD_KEY)} rec, {self._key_name(PLAYBACK_KEY)} play)"
+        )
+        seq_frame.pack(fill="x", **padding)
+
+        self.record_status = ttk.Label(seq_frame, text="REC: OFF", foreground="red")
+        self.record_status.grid(row=0, column=0, sticky="w")
+
+        self.seq_count_label = ttk.Label(seq_frame, text="0 events", foreground="gray")
+        self.seq_count_label.grid(row=0, column=1, sticky="w", padx=(10, 0))
+
+        self.loop_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(seq_frame, text="Loop", variable=self.loop_var, command=self._apply_loop).grid(
+            row=0, column=2, sticky="e"
+        )
+
+        self.player_status = ttk.Label(seq_frame, text="PLAY: OFF", foreground="red")
+        self.player_status.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        self.player_last_label = ttk.Label(seq_frame, text="Last: not played yet", foreground="gray")
+        self.player_last_label.grid(row=2, column=0, columnspan=3, sticky="w")
+
+        ttk.Button(seq_frame, text="Save...", command=self._save_sequence).grid(row=3, column=0, pady=(4, 0), sticky="w")
+        ttk.Button(seq_frame, text="Load...", command=self._load_sequence).grid(row=3, column=1, pady=(4, 0), sticky="w")
+
+        ttk.Label(
+            seq_frame,
+            text="Records key presses and mouse clicks with their exact original pauses, then replays them on a loop.",
+            wraplength=270,
+            foreground="gray",
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
         ttk.Label(
             self.root,
             text="Hotkeys work globally, even outside this window. Esc quits.",
@@ -159,6 +197,42 @@ class App:
             return
         self.stepper.set_interval(interval, jitter)
 
+    def _apply_loop(self) -> None:
+        self.player.loop = self.loop_var.get()
+
+    # ---- sequence recorder / player ----
+
+    def _toggle_recording(self) -> None:
+        if self.player.active:
+            return  # don't record while a sequence is actively being played back
+        if self.recorder.is_recording:
+            self.recorder.stop()
+        else:
+            self.recorder.start()
+
+    def _toggle_playback(self) -> None:
+        if self.recorder.is_recording:
+            return  # don't play while still recording
+        self.player.toggle()
+
+    def _save_sequence(self) -> None:
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            self.recorder.save(path)
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc))
+
+    def _load_sequence(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            self.recorder.load(path)
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("Load failed", str(exc))
+
     # ---- backend wiring ----
 
     def _start_backends(self) -> None:
@@ -166,6 +240,7 @@ class App:
         self.mover.start()
         self.flicker.start()
         self.stepper.start()
+        self.player.start()
         self.listener = start_hotkey_listener(
             bindings={
                 CLICKER_KEY: self.clicker.toggle,
@@ -173,13 +248,13 @@ class App:
                 FLICK_KEY: self.flicker.toggle,
                 CAPTURE_KEY: self.flicker.capture_current_position,
                 STEPPER_KEY: self.stepper.toggle,
+                RECORD_KEY: self._toggle_recording,
+                PLAYBACK_KEY: self._toggle_playback,
             },
             on_exit=self._request_exit,
         )
 
     def _request_exit(self) -> None:
-        # Called from the listener thread — only ever flip a flag here.
-        # The actual teardown happens on the main thread via _poll_status().
         self._exit_requested = True
 
     def _poll_status(self) -> None:
@@ -192,6 +267,18 @@ class App:
         self._set_flick_point_label()
         self._set_status(self.step_status, self.stepper.active)
         self.step_last_label.config(text=f"Last step: {self.stepper.last_step_info}")
+
+        self.record_status.config(
+            text="REC: ON" if self.recorder.is_recording else "REC: OFF",
+            foreground="green" if self.recorder.is_recording else "red",
+        )
+        self.seq_count_label.config(text=f"{len(self.recorder.events)} events")
+        self.player_status.config(
+            text="PLAY: ON" if self.player.active else "PLAY: OFF",
+            foreground="green" if self.player.active else "red",
+        )
+        self.player_last_label.config(text=f"Last: {self.player.last_play_info}")
+
         self.root.after(150, self._poll_status)
 
     def _set_flick_point_label(self) -> None:
@@ -213,6 +300,9 @@ class App:
         self.mover.stop()
         self.flicker.stop()
         self.stepper.stop()
+        self.player.stop()
+        if self.recorder.is_recording:
+            self.recorder.stop()
         self.listener.stop()
         self.root.destroy()
 
